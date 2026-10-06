@@ -1,7 +1,7 @@
 "use client";
 import { useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
-import { buildPickList, detectReq, detectStock, pickSheets, summarize } from "../lib/pickList";
+import { buildPickList, detectReq, detectStock, notFoundList, pickSheets, summarize } from "../lib/pickList";
 
 const card = { background: "#fff", borderRadius: 12, padding: 24, boxShadow: "0 1px 4px rgba(0,0,0,.08)", marginTop: 16 };
 const label = { display: "block", fontSize: 13, color: "#5b6b7a", marginBottom: 4 };
@@ -76,14 +76,19 @@ export default function Home() {
     try {
       const list = buildPickList(stockRows, reqRows, sm, rm);
       if (!list.length) throw new Error("Requirement sheet me koi valid row (qty > 0) nahi mili.");
+      const picks = list.filter((r) => !r.notFound); // blank bin wali rows pick list me nahi
       const aoa = [["sku", "bin", "final bin", "qty", "remark"],
-        ...list.map((r) => [r.sku, r.bin, r.finalBin, r.qty, r.remark])];
+        ...picks.map((r) => [r.sku, r.bin, r.finalBin, r.qty, r.remark])];
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws["!cols"] = [{ wch: 16 }, { wch: 12 }, { wch: 28 }, { wch: 8 }, { wch: 38 }];
       const out = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(out, ws, "Pick List");
+      const nf = notFoundList(list);
+      const ws2 = XLSX.utils.aoa_to_sheet([["sku", "qty", "remark"], ...nf.map((r) => [r.sku, r.qty, r.remark])]);
+      ws2["!cols"] = [{ wch: 16 }, { wch: 8 }, { wch: 32 }];
+      XLSX.utils.book_append_sheet(out, ws2, "Stock Not Found");
       XLSX.writeFile(out, "pick_list.xlsx"); // auto download
-      setInfo({ ...summarize(list), preview: list.slice(0, 15) });
+      setInfo({ ...summarize(list), lines: picks.length, preview: picks.slice(0, 15) });
     } catch (e) {
       setError(e.message || "Kuch galat ho gaya.");
     }
