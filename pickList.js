@@ -1,9 +1,10 @@
 // Pick list allocation logic (browser + node dono me chalta hai)
 
 const ALIASES = {
-  sku: ["sku", "skuid", "skucode", "itemcode", "item", "article", "product", "productcode", "fsn", "barcode"],
+  sku: ["sku", "skuid", "skucode", "itemcode", "item", "article", "product", "productcode", "fsn"],
+  finalbin: ["finalbin", "finalbarcode", "finallocation", "barcode"],
   bin: ["bin", "binno", "binlocation", "location", "loc", "binid"],
-  qty: ["qty", "quantity", "stock", "stockqty", "availableqty", "available", "requirement", "required", "requiredqty", "reqqty", "req"],
+  qty: ["qty", "quantity", "stock", "stockqty", "availableqty", "available", "closingstock", "closingqty", "closing", "requirement", "required", "requiredqty", "reqqty", "req"],
 };
 
 const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -18,28 +19,36 @@ function findCol(headers, key) {
   return -1;
 }
 
-function parseSheet(rows, sheetLabel, needBin) {
-  if (!rows.length) throw new Error(`"${sheetLabel}" sheet khali hai.`);
-  const headers = rows[0];
-  const iSku = findCol(headers, "sku");
-  const iQty = findCol(headers, "qty");
-  const iBin = needBin ? findCol(headers, "bin") : -1;
-  const missing = [];
-  if (iSku < 0) missing.push("SKU");
-  if (iQty < 0) missing.push("Qty");
-  if (needBin && iBin < 0) missing.push("Bin");
-  if (missing.length) {
-    throw new Error(
-      `"${sheetLabel}" sheet me ye column nahi mile: ${missing.join(", ")}. Mile huye headers: ${headers.map(clean).join(", ")}`
-    );
-  }
+// Headers dekh kar columns auto-select (user dropdown se badal sakta hai). -1 = select nahi hua
+export function detectStock(headers) {
+  const bin = findCol(headers, "bin");
+  const fin = findCol(headers, "finalbin");
+  return {
+    sku: findCol(headers, "sku"),
+    loc: bin >= 0 ? bin : fin,
+    locType: bin >= 0 ? "bin" : "final", // "bin" = sirf bin, "final" = Final Barcode (sku + bin)
+    qty: findCol(headers, "qty"),
+  };
+}
+export function detectReq(headers) {
+  return { sku: findCol(headers, "sku"), qty: findCol(headers, "qty") };
+}
+
+function parseSheet(rows, m, needLoc) {
   const out = [];
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r] || [];
-    const sku = clean(row[iSku]);
+    const sku = clean(row[m.sku]);
     if (!sku) continue;
-    const qty = Number(String(row[iQty] ?? "").replace(/,/g, ""));
-    out.push({ sku, bin: needBin ? clean(row[iBin]) : "", qty: Number.isFinite(qty) ? qty : 0 });
+    const qty = Number(String(row[m.qty] ?? "").replace(/,/g, ""));
+    let bin = "";
+    if (needLoc) {
+      const v = clean(row[m.loc]);
+      bin = m.locType === "final"
+        ? (v.startsWith(sku) ? v.slice(sku.length).trim() : v.replace(/^\S+\s+/, ""))
+        : v;
+    }
+    out.push({ sku, bin, qty: Number.isFinite(qty) ? qty : 0 });
   }
   return out;
 }
@@ -61,9 +70,17 @@ export function pickSheets(sheetNames) {
 
 const binCmp = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 
-export function buildPickList(stockRows, reqRows) {
-  const stockRaw = parseSheet(stockRows, "Stock", true);
-  const reqRaw = parseSheet(reqRows, "Requirement", false);
+// stockMap = {sku, loc, locType, qty}, reqMap = {sku, qty} (column index, 0 se shuru)
+export function buildPickList(stockRows, reqRows, stockMap, reqMap) {
+  if (!stockRows.length) throw new Error("Stock sheet khali hai.");
+  if (!reqRows.length) throw new Error("Requirement sheet khali hai.");
+  const need0 = (m, keys, label) => {
+    if (keys.some((k) => m[k] == null || m[k] < 0)) throw new Error(`${label} ke saare columns select karein.`);
+  };
+  need0(stockMap, ["sku", "loc", "qty"], "Stock");
+  need0(reqMap, ["sku", "qty"], "Requirement");
+  const stockRaw = parseSheet(stockRows, stockMap, true);
+  const reqRaw = parseSheet(reqRows, reqMap, false);
 
   // Stock: same SKU + same bin ki qty jod do
   const stock = new Map(); // sku -> Map(bin -> qty)
@@ -87,7 +104,7 @@ export function buildPickList(stockRows, reqRows) {
     const total = bins.reduce((a, b) => a + b.qty, 0);
 
     if (total === 0) {
-      result.push({ sku, bin: "", finalBin: "", qty: 0, remark: `Out of stock (Required ${required})` });
+      result.push({ sku, bin: "", finalBin: "", qty: 0, remark: `Out of stock (Required ${required})`, notFound: true, required });
       continue;
     }
 
@@ -111,6 +128,7 @@ export function buildPickList(stockRows, reqRows) {
       // Rule 7: remark us SKU ki last row par
       const last = result[result.length - 1];
       last.remark = `Short by ${left} (Required ${required}, Available ${total})`;
+      last.shortQty = left;
     }
   }
 
@@ -122,6 +140,16 @@ export function buildPickList(stockRows, reqRows) {
   });
 
   return result;
+}
+
+// Stock Not Found sheet: stock me bilkul nahi mile (poori qty) + partial mile (jitni kami hai utni). Unique SKU.
+export function notFoundList(list) {
+  return list
+    .filter((r) => r.notFound || r.shortQty > 0)
+    .map((r) => (r.notFound
+      ? { sku: r.sku, qty: r.required, remark: r.remark }
+      : { sku: r.sku, qty: r.shortQty, remark: r.remark }))
+    .sort((a, b) => a.sku.localeCompare(b.sku, undefined, { numeric: true }));
 }
 
 export function summarize(list) {
