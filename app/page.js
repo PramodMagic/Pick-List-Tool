@@ -197,6 +197,7 @@ export default function Home() {
           {info.lines > 15 && <div style={{ color: "#7b8794", fontSize: 13, marginTop: 8 }}>Preview me pehli 15 lines. Poori list file me hai.</div>}
         </div>
       )}
+      <div style={{ marginTop: 28, textAlign: "center", fontSize: 12, color: "#9aa7b4" }}>Version v5 (Stock Not Found me partial short bhi)</div>
     </main>
   );
 }
